@@ -58,9 +58,12 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         )
+        // Правый край экрана, по вертикали примерно по центру — подальше от
+        // клавиатуры, поля ввода и кнопок окна обмена. Кнопку можно перетащить пальцем.
+        val m = resources.displayMetrics
         p.gravity = Gravity.TOP or Gravity.START
-        p.x = 0
-        p.y = 400
+        p.x = m.widthPixels - 220
+        p.y = m.heightPixels / 2
         params = p
 
         val btn = Button(this).apply {

@@ -11,9 +11,11 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.os.Bundle
 import android.provider.MediaStore
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.*
 import kotlin.coroutines.resume
 
@@ -23,28 +25,28 @@ class ClickerService : AccessibilityService() {
         var instance: ClickerService? = null
         @Volatile var status = "ожидание"
 
-        // Папка для файлов: Download/card's
         const val REL_PATH = "Download/card's/"
 
         // ===== Координаты измерены по видео пользователя (экран 1280x580, landscape) =====
-        // Заданы в долях ширины/высоты экрана (0..1), поэтому должны работать на разных
-        // разрешениях, если соотношение сторон экрана такое же (полноэкранная игра).
         const val FIELD_X = 0.465f;  const val FIELD_Y = 0.833f   // поле "Введите код обмена"
-        const val CLEAR_X = 0.598f;  const val CLEAR_Y = 0.833f   // крестик очистки поля
+        const val CLEAR_X = 0.598f;  const val CLEAR_Y = 0.833f   // крестик очистки поля (резерв)
         const val EXCH_X = 0.666f;   const val EXCH_Y = 0.833f    // кнопка "Обменять"
-        const val CLOSE_X = 0.807f;  const val CLOSE_Y = 0.150f   // крестик закрытия окна "Обменять"
+        const val CLOSE_X = 0.807f;  const val CLOSE_Y = 0.150f   // крестик окна "Обменять"
 
         const val OK_X = 0.500f;     const val OK_Y = 0.845f      // жёлтая кнопка OK в "Обменяться картами"
-        const val DIALOG_CLOSE_X = 0.823f; const val DIALOG_CLOSE_Y = 0.131f // крестик этого окна
+        const val DIALOG_CLOSE_X = 0.823f; const val DIALOG_CLOSE_Y = 0.131f
 
-        // Клавиатура (строка цифр), y одна и та же для всех цифр
+        // Нейтральная точка (обычный текст подсказки) — тап туда убирает клавиатуру,
+        // не задевая ни одной кнопки и не закрывая окно.
+        const val DISMISS_X = 0.300f; const val DISMISS_Y = 0.235f
+
+        // Клавиатура (резервный способ ввода, если Accessibility SET_TEXT не сработал)
         const val KEY_ROW_Y = 0.579f
         val DIGITS = arrayOf(
             0.917f, // 0
             0.079f, 0.148f, 0.216f, 0.286f, 0.355f, // 1 2 3 4 5
             0.641f, 0.710f, 0.780f, 0.848f          // 6 7 8 9
         )
-        const val ENTER_X = 0.900f; const val ENTER_Y = 0.952f // синяя галочка/ввод на клавиатуре
     }
 
     private var job: Job? = null
@@ -82,19 +84,58 @@ class ClickerService : AccessibilityService() {
     fun isRunning() = job?.isActive == true
 
     private suspend fun tryCode(code: Long): Boolean {
-        tap(CLEAR_X, CLEAR_Y); delay(250)
-        tap(FIELD_X, FIELD_Y); delay(500)
-        for (ch in code.toString()) {
-            val idx = ch - '0'
-            tap(DIGITS[idx], KEY_ROW_Y); delay(120)
+        val text = code.toString()
+        status = "ввод $text"
+
+        // 1) Сфокусировать поле обычным тапом (создаёт/активирует системный EditText).
+        tap(FIELD_X, FIELD_Y); delay(350)
+
+        // 2) Подставить код напрямую через Accessibility — ПОЛНОСТЬЮ заменяет
+        //    содержимое поля, старый текст не остаётся и не склеивается.
+        val setOk = setFieldText(text)
+
+        if (!setOk) {
+            // Резерв: тапы по клавиатуре (может давать склеивание, поэтому очищаем явно)
+            tap(CLEAR_X, CLEAR_Y); delay(200)
+            tap(FIELD_X, FIELD_Y); delay(350)
+            for (ch in text) tap(DIGITS[ch - '0'], KEY_ROW_Y).also { delay(110) }
         }
-        tap(ENTER_X, ENTER_Y); delay(300)
+
+        delay(200)
+        tap(DISMISS_X, DISMISS_Y); delay(350)   // убрать клавиатуру, не трогая кнопки
         tap(EXCH_X, EXCH_Y); delay(1000)
+
         val bmp = screenshot() ?: return false
         val hit = isYellow(bmp, OK_X, OK_Y)
         if (hit) saveScreenshot(bmp, code)
         bmp.recycle()
         return hit
+    }
+
+    /** Находит системное поле ввода (EditText) в активном окне и заменяет его текст целиком. */
+    private fun setFieldText(text: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val node = findEditText(root, 0) ?: run { root.recycle(); return false }
+        val args = Bundle()
+        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        node.recycle(); root.recycle()
+        return ok
+    }
+
+    private fun findEditText(node: AccessibilityNodeInfo, depth: Int): AccessibilityNodeInfo? {
+        if (depth > 40) return null
+        if (node.className == "android.widget.EditText") return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findEditText(child, depth + 1)
+            if (found != null) {
+                if (found !== child) child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
     }
 
     private fun isYellow(b: Bitmap, fx: Float, fy: Float): Boolean {
