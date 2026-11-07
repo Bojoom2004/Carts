@@ -4,39 +4,47 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Path
+import android.provider.MediaStore
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import kotlinx.coroutines.*
-import java.io.File
-import java.io.FileOutputStream
 import kotlin.coroutines.resume
 
 class ClickerService : AccessibilityService() {
 
     companion object {
         var instance: ClickerService? = null
-        @Volatile var status = "idle"
+        @Volatile var status = "ожидание"
 
-        // ВСЕ координаты в долях экрана (0..1), ландшафт. Подгоните под своё устройство!
-        // Подсказка: Параметры разработчика -> "Показывать касания / Расположение указателя".
-        const val FIELD_X = 0.46f;  const val FIELD_Y = 0.83f   // поле ввода кода
-        const val CLEAR_X = 0.60f;  const val CLEAR_Y = 0.83f   // крестик очистки в поле
-        const val EXCH_X = 0.67f;   const val EXCH_Y = 0.835f   // кнопка "Обменять"
-        const val OK_X = 0.50f;     const val OK_Y = 0.845f      // жёлтая кнопка OK в окне обмена
-        const val CLOSE_X = 0.82f;  const val CLOSE_Y = 0.13f   // крестик закрытия окна обмена
+        // Папка для файлов: Download/card's
+        const val REL_PATH = "Download/card's/"
 
-        // Клавиатура: центр каждой цифры 0..9 (x, y в долях экрана). Заполните по своей клавиатуре.
+        // ===== Координаты измерены по видео пользователя (экран 1280x580, landscape) =====
+        // Заданы в долях ширины/высоты экрана (0..1), поэтому должны работать на разных
+        // разрешениях, если соотношение сторон экрана такое же (полноэкранная игра).
+        const val FIELD_X = 0.465f;  const val FIELD_Y = 0.833f   // поле "Введите код обмена"
+        const val CLEAR_X = 0.598f;  const val CLEAR_Y = 0.833f   // крестик очистки поля
+        const val EXCH_X = 0.666f;   const val EXCH_Y = 0.833f    // кнопка "Обменять"
+        const val CLOSE_X = 0.807f;  const val CLOSE_Y = 0.150f   // крестик закрытия окна "Обменять"
+
+        const val OK_X = 0.500f;     const val OK_Y = 0.845f      // жёлтая кнопка OK в "Обменяться картами"
+        const val DIALOG_CLOSE_X = 0.823f; const val DIALOG_CLOSE_Y = 0.131f // крестик этого окна
+
+        // Клавиатура (строка цифр), y одна и та же для всех цифр
+        const val KEY_ROW_Y = 0.579f
         val DIGITS = arrayOf(
-            0.50f to 0.90f, // 0
-            0.10f to 0.55f, 0.20f to 0.55f, 0.30f to 0.55f, // 1 2 3
-            0.40f to 0.55f, 0.50f to 0.55f, 0.60f to 0.55f, // 4 5 6
-            0.70f to 0.55f, 0.80f to 0.55f, 0.90f to 0.55f  // 7 8 9
+            0.917f, // 0
+            0.079f, 0.148f, 0.216f, 0.286f, 0.355f, // 1 2 3 4 5
+            0.641f, 0.710f, 0.780f, 0.848f          // 6 7 8 9
         )
-        const val KEYBOARD_DONE_X = 0.95f; const val KEYBOARD_DONE_Y = 0.90f
+        const val ENTER_X = 0.900f; const val ENTER_Y = 0.952f // синяя галочка/ввод на клавиатуре
     }
 
     private var job: Job? = null
@@ -51,7 +59,9 @@ class ClickerService : AccessibilityService() {
 
     fun start(startCode: Long, count: Int, delayMs: Long) {
         stop()
-        val m = resources.displayMetrics; w = maxOf(m.widthPixels, m.heightPixels); h = minOf(m.widthPixels, m.heightPixels)
+        val m = resources.displayMetrics
+        w = maxOf(m.widthPixels, m.heightPixels)
+        h = minOf(m.widthPixels, m.heightPixels)
         job = scope.launch {
             var code = startCode
             repeat(count) {
@@ -59,27 +69,29 @@ class ClickerService : AccessibilityService() {
                 if (tryCode(code)) {
                     saveHit(code)
                     status = "НАЙДЕН $code"
-                    tap(CLOSE_X, CLOSE_Y); delay(600)
+                    tap(DIALOG_CLOSE_X, DIALOG_CLOSE_Y); delay(600)
                 }
                 code++
-                delay(delayMs)   // пауза между попытками, не ставьте слишком маленькую
+                delay(delayMs)
             }
             status = "готово, последний код ${code - 1}"
         }
     }
 
     fun stop() { job?.cancel(); status = "остановлено" }
+    fun isRunning() = job?.isActive == true
 
     private suspend fun tryCode(code: Long): Boolean {
         tap(CLEAR_X, CLEAR_Y); delay(250)
-        tap(FIELD_X, FIELD_Y); delay(500)         // открыть клавиатуру
+        tap(FIELD_X, FIELD_Y); delay(500)
         for (ch in code.toString()) {
-            val (x, y) = DIGITS[ch - '0']; tap(x, y); delay(120)
+            val idx = ch - '0'
+            tap(DIGITS[idx], KEY_ROW_Y); delay(120)
         }
-        tap(KEYBOARD_DONE_X, KEYBOARD_DONE_Y); delay(300)
-        tap(EXCH_X, EXCH_Y); delay(1000)           // ждём ответ сервера
+        tap(ENTER_X, ENTER_Y); delay(300)
+        tap(EXCH_X, EXCH_Y); delay(1000)
         val bmp = screenshot() ?: return false
-        val hit = isYellow(bmp, OK_X, OK_Y)        // жёлтая кнопка OK => окно обмена открылось
+        val hit = isYellow(bmp, OK_X, OK_Y)
         if (hit) saveScreenshot(bmp, code)
         bmp.recycle()
         return hit
@@ -87,22 +99,46 @@ class ClickerService : AccessibilityService() {
 
     private fun isYellow(b: Bitmap, fx: Float, fy: Float): Boolean {
         val c = b.getPixel((fx * b.width).toInt(), (fy * b.height).toInt())
-        return Color.red(c) > 220 && Color.green(c) in 160..230 && Color.blue(c) < 90
+        return Color.red(c) > 180 && Color.green(c) in 130..225 && Color.blue(c) < 130
+    }
+
+    // ===== Сохранение в Download/card's через MediaStore (scoped storage) =====
+
+    private fun outputStreamFor(name: String, mime: String, append: Boolean): java.io.OutputStream? {
+        val resolver = applicationContext.contentResolver
+        val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val projection = arrayOf(MediaStore.MediaColumns._ID)
+        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME}=? AND ${MediaStore.MediaColumns.RELATIVE_PATH}=?"
+        resolver.query(collection, projection, selection, arrayOf(name, REL_PATH), null)?.use { c ->
+            if (c.moveToFirst()) {
+                val id = c.getLong(0)
+                val uri = android.content.ContentUris.withAppendedId(collection, id)
+                return resolver.openOutputStream(uri, if (append) "wa" else "w")
+            }
+        }
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, REL_PATH)
+        }
+        val uri = resolver.insert(collection, values) ?: return null
+        return resolver.openOutputStream(uri)
     }
 
     private fun saveHit(code: Long) {
-        File(getExternalFilesDir(null), "found_codes.txt").appendText("$code\n")
+        outputStreamFor("found_codes.txt", "text/plain", append = true)?.use {
+            it.write("$code\n".toByteArray())
+        }
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("code", code.toString()))
     }
 
     private fun saveScreenshot(b: Bitmap, code: Long) {
-        // Код в имени файла + подписан на самой картинке
         val copy = b.copy(Bitmap.Config.ARGB_8888, true)
-        val canvas = android.graphics.Canvas(copy)
-        val p = android.graphics.Paint().apply { color = Color.RED; textSize = 64f; isFakeBoldText = true }
+        val canvas = Canvas(copy)
+        val p = Paint().apply { color = Color.RED; textSize = 64f; isFakeBoldText = true }
         canvas.drawText("CODE: $code", 40f, 100f, p)
-        FileOutputStream(File(getExternalFilesDir(null), "hit_$code.png")).use {
+        outputStreamFor("hit_$code.png", "image/png", append = false)?.use {
             copy.compress(Bitmap.CompressFormat.PNG, 100, it)
         }
         copy.recycle()
