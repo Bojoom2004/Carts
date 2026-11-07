@@ -91,18 +91,23 @@ class ClickerService : AccessibilityService() {
         tap(FIELD_X, FIELD_Y); delay(350)
 
         // 2) Подставить код напрямую через Accessibility — ПОЛНОСТЬЮ заменяет
-        //    содержимое поля, старый текст не остаётся и не склеивается.
+        //    содержимое поля (старый текст не остаётся и не склеивается), и сразу
+        //    программно снимаем фокус с поля (ACTION_CLEAR_FOCUS) — это надёжнее,
+        //    чем тап "в пустое место", и должно закрыть клавиатуру без риска
+        //    попасть по чему-то на ней или рядом с кнопкой "Обменять".
         val setOk = setFieldText(text)
 
         if (!setOk) {
-            // Резерв: тапы по клавиатуре (может давать склеивание, поэтому очищаем явно)
+            // Резерв: тапы по клавиатуре, если системное поле не нашлось.
             tap(CLEAR_X, CLEAR_Y); delay(200)
             tap(FIELD_X, FIELD_Y); delay(350)
             for (ch in text) tap(DIGITS[ch - '0'], KEY_ROW_Y).also { delay(110) }
+            tap(DISMISS_X, DISMISS_Y)
         }
 
-        delay(200)
-        tap(DISMISS_X, DISMISS_Y); delay(350)   // убрать клавиатуру, не трогая кнопки
+        // Пауза побольше — дать клавиатуре полностью закрыться и макету "осесть"
+        // перед тапом по "Обменять", чтобы не промахнуться мимо кнопки.
+        delay(550)
         tap(EXCH_X, EXCH_Y); delay(1000)
 
         val bmp = screenshot() ?: return false
@@ -112,13 +117,14 @@ class ClickerService : AccessibilityService() {
         return hit
     }
 
-    /** Находит системное поле ввода (EditText) в активном окне и заменяет его текст целиком. */
+    /** Находит системное поле ввода (EditText), заменяет текст целиком и снимает фокус. */
     private fun setFieldText(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
         val node = findEditText(root, 0) ?: run { root.recycle(); return false }
         val args = Bundle()
         args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        node.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
         node.recycle(); root.recycle()
         return ok
     }
