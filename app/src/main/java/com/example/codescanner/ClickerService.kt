@@ -26,32 +26,12 @@ class ClickerService : AccessibilityService() {
         @Volatile var status = "ожидание"
 
         const val REL_PATH = "Download/card's/"
-
-        // ===== Координаты измерены по видео пользователя (экран 1280x580, landscape) =====
-        const val FIELD_X = 0.465f;  const val FIELD_Y = 0.833f   // поле "Введите код обмена"
-        const val CLEAR_X = 0.598f;  const val CLEAR_Y = 0.833f   // крестик очистки поля (резерв)
-        const val EXCH_X = 0.666f;   const val EXCH_Y = 0.833f    // кнопка "Обменять"
-        const val CLOSE_X = 0.807f;  const val CLOSE_Y = 0.150f   // крестик окна "Обменять"
-
-        const val OK_X = 0.500f;     const val OK_Y = 0.845f      // жёлтая кнопка OK в "Обменяться картами"
-        const val DIALOG_CLOSE_X = 0.823f; const val DIALOG_CLOSE_Y = 0.131f
-
-        // Нейтральная точка (обычный текст подсказки) — тап туда убирает клавиатуру,
-        // не задевая ни одной кнопки и не закрывая окно.
-        const val DISMISS_X = 0.300f; const val DISMISS_Y = 0.235f
-
-        // Клавиатура (резервный способ ввода, если Accessibility SET_TEXT не сработал)
-        const val KEY_ROW_Y = 0.579f
-        val DIGITS = arrayOf(
-            0.917f, // 0
-            0.079f, 0.148f, 0.216f, 0.286f, 0.355f, // 1 2 3 4 5
-            0.641f, 0.710f, 0.780f, 0.848f          // 6 7 8 9
-        )
     }
 
     private var job: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main)
     private var w = 0; private var h = 0
+    private var cfg = Config()
 
     override fun onServiceConnected() { instance = this
         val m = resources.displayMetrics; w = m.widthPixels; h = m.heightPixels }
@@ -61,6 +41,7 @@ class ClickerService : AccessibilityService() {
 
     fun start(startCode: Long, count: Int, delayMs: Long) {
         stop()
+        cfg = Config.load(applicationContext) // читаем Download/configcards/config.txt заново при каждом старте
         val m = resources.displayMetrics
         w = maxOf(m.widthPixels, m.heightPixels)
         h = minOf(m.widthPixels, m.heightPixels)
@@ -71,7 +52,7 @@ class ClickerService : AccessibilityService() {
                 if (tryCode(code)) {
                     saveHit(code)
                     status = "НАЙДЕН $code"
-                    tap(DIALOG_CLOSE_X, DIALOG_CLOSE_Y); delay(600)
+                    tap(cfg.dialogCloseX, cfg.dialogCloseY); delay(cfg.delayAfterHitClose)
                 }
                 code++
                 delay(delayMs)
@@ -88,50 +69,47 @@ class ClickerService : AccessibilityService() {
         status = "ввод $text"
 
         // 1) Сфокусировать поле обычным тапом (создаёт/активирует системный EditText).
-        tap(FIELD_X, FIELD_Y); delay(350)
+        tap(cfg.fieldX, cfg.fieldY); delay(cfg.delayAfterFieldTap)
 
-        // 2) Подставить код напрямую через Accessibility — ПОЛНОСТЬЮ заменяет
-        //    содержимое поля (старый текст не остаётся и не склеивается), и сразу
-        //    программно снимаем фокус с поля (ACTION_CLEAR_FOCUS) — это надёжнее,
-        //    чем тап "в пустое место", и должно закрыть клавиатуру без риска
-        //    попасть по чему-то на ней или рядом с кнопкой "Обменять".
+        // 2) Подставить код напрямую через Accessibility — полностью заменяет
+        //    содержимое поля, старый текст не остаётся и не склеивается.
         val setOk = setFieldText(text)
 
         if (!setOk) {
             // Резерв: тапы по клавиатуре, если системное поле не нашлось.
-            tap(CLEAR_X, CLEAR_Y); delay(200)
-            tap(FIELD_X, FIELD_Y); delay(350)
-            for (ch in text) tap(DIGITS[ch - '0'], KEY_ROW_Y).also { delay(110) }
+            tap(cfg.clearX, cfg.clearY); delay(200)
+            tap(cfg.fieldX, cfg.fieldY); delay(350)
+            val digits = cfg.digits()
+            for (ch in text) {
+                tap(digits[ch - '0'], cfg.keyRowY); delay(cfg.delayDigitTap)
+            }
         }
 
-        // Закрыть клавиатуру системным действием "Назад". Это НЕ зависит от того,
-        // как конкретная игра обрабатывает фокус поля (ACTION_CLEAR_FOCUS на
-        // Unity-поле не сработал — клавиатура оставалась открытой всё время).
-        // Первое "назад" при открытой клавиатуре всегда закрывает именно её,
-        // а не окно/диалог позади неё.
-        delay(150)
-        performGlobalAction(GLOBAL_ACTION_BACK)
+        delay(cfg.delayAfterSetText)
 
-        // Пауза побольше — дать клавиатуре полностью закрыться и макету "осесть"
-        // перед тапом по "Обменять", чтобы не промахнуться мимо кнопки.
-        delay(600)
-        tap(EXCH_X, EXCH_Y); delay(1000)
+        // 3) Коммит введённого текста — тап по синей кнопке ввода/галочке НА САМОЙ
+        //    клавиатуре (IME action), а НЕ системное "Назад". "Назад" в этой игре
+        //    отменяет/обнуляет поле вместо того чтобы просто скрыть клавиатуру —
+        //    из-за этого реального обмена не происходило вообще.
+        tap(cfg.enterX, cfg.enterY)
+        delay(cfg.delayAfterEnter)
+
+        tap(cfg.exchX, cfg.exchY); delay(cfg.delayAfterExch)
 
         val bmp = screenshot() ?: return false
-        val hit = isYellow(bmp, OK_X, OK_Y)
+        val hit = isYellow(bmp, cfg.okX, cfg.okY)
         if (hit) saveScreenshot(bmp, code)
         bmp.recycle()
         return hit
     }
 
-    /** Находит системное поле ввода (EditText), заменяет текст целиком и снимает фокус. */
+    /** Находит системное поле ввода (EditText) в активном окне и заменяет его текст целиком. */
     private fun setFieldText(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
         val node = findEditText(root, 0) ?: run { root.recycle(); return false }
         val args = Bundle()
         args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        node.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
         node.recycle(); root.recycle()
         return ok
     }
@@ -153,7 +131,7 @@ class ClickerService : AccessibilityService() {
 
     private fun isYellow(b: Bitmap, fx: Float, fy: Float): Boolean {
         val c = b.getPixel((fx * b.width).toInt(), (fy * b.height).toInt())
-        return Color.red(c) > 180 && Color.green(c) in 130..225 && Color.blue(c) < 130
+        return Color.red(c) > cfg.yellowRMin && Color.green(c) in cfg.yellowGMin..cfg.yellowGMax && Color.blue(c) < cfg.yellowBMax
     }
 
     // ===== Сохранение в Download/card's через MediaStore (scoped storage) =====

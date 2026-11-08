@@ -87,7 +87,10 @@ class MainActivity : Activity() {
         root.addView(statusView)
 
         val note = TextView(this).apply {
-            text = "Найденные коды и скриншоты сохраняются в Download/card's"
+            text = "Найденные коды и скриншоты сохраняются в Download/card's.\n" +
+                "Координаты и задержки — в Download/configcards/config.txt " +
+                "(создаётся автоматически при первом старте). Поправьте файл и " +
+                "нажмите Старт заново — пересборка приложения не нужна."
             setPadding(0, 30, 0, 0)
         }
         root.addView(note)
