@@ -102,12 +102,19 @@ class ClickerService : AccessibilityService() {
             tap(CLEAR_X, CLEAR_Y); delay(200)
             tap(FIELD_X, FIELD_Y); delay(350)
             for (ch in text) tap(DIGITS[ch - '0'], KEY_ROW_Y).also { delay(110) }
-            tap(DISMISS_X, DISMISS_Y)
         }
+
+        // Закрыть клавиатуру системным действием "Назад". Это НЕ зависит от того,
+        // как конкретная игра обрабатывает фокус поля (ACTION_CLEAR_FOCUS на
+        // Unity-поле не сработал — клавиатура оставалась открытой всё время).
+        // Первое "назад" при открытой клавиатуре всегда закрывает именно её,
+        // а не окно/диалог позади неё.
+        delay(150)
+        performGlobalAction(GLOBAL_ACTION_BACK)
 
         // Пауза побольше — дать клавиатуре полностью закрыться и макету "осесть"
         // перед тапом по "Обменять", чтобы не промахнуться мимо кнопки.
-        delay(550)
+        delay(600)
         tap(EXCH_X, EXCH_Y); delay(1000)
 
         val bmp = screenshot() ?: return false
