@@ -26,6 +26,7 @@ class ClickerService : AccessibilityService() {
         @Volatile var status = "ожидание"
 
         const val REL_PATH = "Download/card's/"
+        const val VERSION = "v8"
     }
 
     private var job: Job? = null
@@ -50,7 +51,7 @@ class ClickerService : AccessibilityService() {
         job = scope.launch {
             var code = startCode
             repeat(count) {
-                status = "проверяю $code"
+                status = "[$VERSION] проверяю $code"
                 if (tryCode(code)) {
                     val note = lastNote
                     saveHit(code, note)
@@ -99,7 +100,7 @@ class ClickerService : AccessibilityService() {
 
         tap(cfg.exchX, cfg.exchY); delay(cfg.delayAfterExch)
 
-        val bmp = screenshot() ?: return false
+        val bmp = screenshot() ?: run { status = "[$VERSION] скриншот не получен ($code)"; return false }
         val yellow = isYellow(bmp, cfg.okX, cfg.okY)
         // Второй вариант находки: код рабочий, но у вас нет нужной карты (серая OK, красная надпись).
         val noCard = !yellow && isNoCard(bmp)
