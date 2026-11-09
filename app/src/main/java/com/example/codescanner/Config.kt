@@ -46,6 +46,22 @@ class Config {
     var yellowGMax = 225
     var yellowBMax = 130
 
+    // Окно "Обменяться картами" с красной надписью "У вас нет карты, которую хочет игрок"
+    // (код рабочий, но нужной карты нет; кнопка OK серая). Ищем красные пиксели надписи
+    // в прямоугольнике (доли экрана) — если их доля >= noCardRatio, считаем находкой.
+    var noCardX1 = 0.40f; var noCardX2 = 0.60f
+    var noCardY1 = 0.745f; var noCardY2 = 0.800f
+    var noCardRatio = 0.02f
+    var noCardRMin = 190
+    var noCardGMax = 90
+    var noCardBMax = 110
+
+    // Определение "открыто окно-диалог поверх списка обменов": точка на месте кнопки "Обменять"
+    // (доли реального экрана). В списке там тёмная кнопка/клавиатура, в диалоге — светлая панель.
+    var probeX = 0.640f; var probeY = 0.833f
+    var probeLumMin = 140
+    var closeRetries = 4
+
     fun digits() = floatArrayOf(digit0, digit1, digit2, digit3, digit4, digit5, digit6, digit7, digit8, digit9)
 
     companion object {
@@ -93,6 +109,22 @@ class Config {
             appendLine("YELLOW_G_MIN=${c.yellowGMin}")
             appendLine("YELLOW_G_MAX=${c.yellowGMax}")
             appendLine("YELLOW_B_MAX=${c.yellowBMax}")
+            appendLine()
+            appendLine("# Окно \"нет карты\": красная надпись (область в долях экрана, мин. доля красных пикселей, пороги RGB)")
+            appendLine("NOCARD_X1=${c.noCardX1}")
+            appendLine("NOCARD_X2=${c.noCardX2}")
+            appendLine("NOCARD_Y1=${c.noCardY1}")
+            appendLine("NOCARD_Y2=${c.noCardY2}")
+            appendLine("NOCARD_RATIO=${c.noCardRatio}")
+            appendLine("NOCARD_R_MIN=${c.noCardRMin}")
+            appendLine("NOCARD_G_MAX=${c.noCardGMax}")
+            appendLine("NOCARD_B_MAX=${c.noCardBMax}")
+            appendLine()
+            appendLine("# Любое окно-диалог (светлая панель на месте кнопки Обменять) считается находкой и закрывается крестиком")
+            appendLine("PROBE_X=${c.probeX}")
+            appendLine("PROBE_Y=${c.probeY}")
+            appendLine("PROBE_LUM_MIN=${c.probeLumMin}")
+            appendLine("CLOSE_RETRIES=${c.closeRetries}")
         }
 
         /** Читает config.txt из Download/configcards. Если файла нет — создаёт с значениями по умолчанию. */
@@ -169,6 +201,17 @@ class Config {
             cfg.yellowGMin = i("YELLOW_G_MIN", cfg.yellowGMin)
             cfg.yellowGMax = i("YELLOW_G_MAX", cfg.yellowGMax)
             cfg.yellowBMax = i("YELLOW_B_MAX", cfg.yellowBMax)
+
+            cfg.noCardX1 = f("NOCARD_X1", cfg.noCardX1); cfg.noCardX2 = f("NOCARD_X2", cfg.noCardX2)
+            cfg.noCardY1 = f("NOCARD_Y1", cfg.noCardY1); cfg.noCardY2 = f("NOCARD_Y2", cfg.noCardY2)
+            cfg.noCardRatio = f("NOCARD_RATIO", cfg.noCardRatio)
+            cfg.noCardRMin = i("NOCARD_R_MIN", cfg.noCardRMin)
+            cfg.noCardGMax = i("NOCARD_G_MAX", cfg.noCardGMax)
+            cfg.noCardBMax = i("NOCARD_B_MAX", cfg.noCardBMax)
+
+            cfg.probeX = f("PROBE_X", cfg.probeX); cfg.probeY = f("PROBE_Y", cfg.probeY)
+            cfg.probeLumMin = i("PROBE_LUM_MIN", cfg.probeLumMin)
+            cfg.closeRetries = i("CLOSE_RETRIES", cfg.closeRetries)
         }
     }
 }
