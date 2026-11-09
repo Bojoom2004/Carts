@@ -56,6 +56,12 @@ class Config {
     var noCardGMax = 90
     var noCardBMax = 110
 
+    // Определение "открыто окно-диалог поверх списка обменов": точка на месте кнопки "Обменять"
+    // (доли реального экрана). В списке там тёмная кнопка/клавиатура, в диалоге — светлая панель.
+    var probeX = 0.640f; var probeY = 0.833f
+    var probeLumMin = 140
+    var closeRetries = 4
+
     fun digits() = floatArrayOf(digit0, digit1, digit2, digit3, digit4, digit5, digit6, digit7, digit8, digit9)
 
     companion object {
@@ -113,6 +119,12 @@ class Config {
             appendLine("NOCARD_R_MIN=${c.noCardRMin}")
             appendLine("NOCARD_G_MAX=${c.noCardGMax}")
             appendLine("NOCARD_B_MAX=${c.noCardBMax}")
+            appendLine()
+            appendLine("# Любое окно-диалог (светлая панель на месте кнопки Обменять) считается находкой и закрывается крестиком")
+            appendLine("PROBE_X=${c.probeX}")
+            appendLine("PROBE_Y=${c.probeY}")
+            appendLine("PROBE_LUM_MIN=${c.probeLumMin}")
+            appendLine("CLOSE_RETRIES=${c.closeRetries}")
         }
 
         /** Читает config.txt из Download/configcards. Если файла нет — создаёт с значениями по умолчанию. */
@@ -196,6 +208,10 @@ class Config {
             cfg.noCardRMin = i("NOCARD_R_MIN", cfg.noCardRMin)
             cfg.noCardGMax = i("NOCARD_G_MAX", cfg.noCardGMax)
             cfg.noCardBMax = i("NOCARD_B_MAX", cfg.noCardBMax)
+
+            cfg.probeX = f("PROBE_X", cfg.probeX); cfg.probeY = f("PROBE_Y", cfg.probeY)
+            cfg.probeLumMin = i("PROBE_LUM_MIN", cfg.probeLumMin)
+            cfg.closeRetries = i("CLOSE_RETRIES", cfg.closeRetries)
         }
     }
 }

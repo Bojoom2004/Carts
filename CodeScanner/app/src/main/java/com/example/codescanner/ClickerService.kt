@@ -32,8 +32,8 @@ class ClickerService : AccessibilityService() {
     private val scope = CoroutineScope(Dispatchers.Main)
     private var w = 0; private var h = 0
     private var cfg = Config()
-    // true, если последняя находка — окно "У вас нет карты, которую хочет игрок"
-    private var lastNoCard = false
+    // Пометка последней находки: "" — обычная (жёлтая OK), "нет карты", "окно" — иное диалоговое окно
+    private var lastNote = ""
 
     override fun onServiceConnected() { instance = this
         val m = resources.displayMetrics; w = m.widthPixels; h = m.heightPixels }
@@ -52,9 +52,10 @@ class ClickerService : AccessibilityService() {
             repeat(count) {
                 status = "проверяю $code"
                 if (tryCode(code)) {
-                    saveHit(code, lastNoCard)
-                    status = if (lastNoCard) "НАЙДЕН $code (нет карты)" else "НАЙДЕН $code"
-                    tap(cfg.dialogCloseX, cfg.dialogCloseY); delay(cfg.delayAfterHitClose)
+                    val note = lastNote
+                    saveHit(code, note)
+                    status = if (note.isEmpty()) "НАЙДЕН $code" else "НАЙДЕН $code ($note)"
+                    closeDialog()
                 }
                 code++
                 delay(delayMs)
@@ -102,9 +103,11 @@ class ClickerService : AccessibilityService() {
         val yellow = isYellow(bmp, cfg.okX, cfg.okY)
         // Второй вариант находки: код рабочий, но у вас нет нужной карты (серая OK, красная надпись).
         val noCard = !yellow && isNoCard(bmp)
-        lastNoCard = noCard
-        val hit = yellow || noCard
-        if (hit) saveScreenshot(bmp, code, noCard)
+        // Третий (страховка): открылось любое другое окно-диалог — считаем находкой и закроем крестиком.
+        val otherDialog = !yellow && !noCard && isDialogOpen(bmp)
+        lastNote = if (yellow) "" else if (noCard) "нет карты" else "окно"
+        val hit = yellow || noCard || otherDialog
+        if (hit) saveScreenshot(bmp, code, lastNote)
         bmp.recycle()
         return hit
     }
@@ -138,6 +141,30 @@ class ClickerService : AccessibilityService() {
     private fun isYellow(b: Bitmap, fx: Float, fy: Float): Boolean {
         val c = b.getPixel((fx * b.width).toInt(), (fy * b.height).toInt())
         return Color.red(c) > cfg.yellowRMin && Color.green(c) in cfg.yellowGMin..cfg.yellowGMax && Color.blue(c) < cfg.yellowBMax
+    }
+
+    /** Диалог открыт, если на месте кнопки "Обменять" светлая панель (в списке там тёмная кнопка или клавиатура). */
+    private fun isDialogOpen(b: Bitmap): Boolean {
+        val x = (cfg.probeX * b.width).toInt().coerceIn(3, b.width - 4)
+        val y = (cfg.probeY * b.height).toInt().coerceIn(3, b.height - 4)
+        var sum = 0; var n = 0
+        for (dy in -3..3) for (dx in -3..3) {
+            val c = b.getPixel(x + dx, y + dy)
+            sum += (Color.red(c) + Color.green(c) + Color.blue(c)) / 3; n++
+        }
+        return sum / n >= cfg.probeLumMin
+    }
+
+    /** Закрывает диалог крестиком; проверяет скриншотом и повторяет, пока диалог не исчезнет. */
+    private suspend fun closeDialog() {
+        repeat(maxOf(1, cfg.closeRetries)) {
+            tap(cfg.dialogCloseX, cfg.dialogCloseY)
+            delay(cfg.delayAfterHitClose)
+            val b = screenshot() ?: return
+            val open = isDialogOpen(b)
+            b.recycle()
+            if (!open) return
+        }
     }
 
     /** Есть ли в области надписи "У вас нет карты, которую хочет игрок" достаточно красных пикселей. */
@@ -181,19 +208,19 @@ class ClickerService : AccessibilityService() {
         return resolver.openOutputStream(uri)
     }
 
-    private fun saveHit(code: Long, noCard: Boolean) {
+    private fun saveHit(code: Long, note: String) {
         outputStreamFor("found_codes.txt", "text/plain", append = true)?.use {
-            it.write((if (noCard) "$code (нет карты)\n" else "$code\n").toByteArray())
+            it.write((if (note.isEmpty()) "$code\n" else "$code ($note)\n").toByteArray())
         }
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("code", code.toString()))
     }
 
-    private fun saveScreenshot(b: Bitmap, code: Long, noCard: Boolean) {
+    private fun saveScreenshot(b: Bitmap, code: Long, note: String) {
         val copy = b.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(copy)
         val p = Paint().apply { color = Color.RED; textSize = 64f; isFakeBoldText = true }
-        canvas.drawText(if (noCard) "CODE: $code (no card)" else "CODE: $code", 40f, 100f, p)
+        canvas.drawText(if (note.isEmpty()) "CODE: $code" else "CODE: $code ($note)", 40f, 100f, p)
         outputStreamFor("hit_$code.png", "image/png", append = false)?.use {
             copy.compress(Bitmap.CompressFormat.PNG, 100, it)
         }
