@@ -61,6 +61,8 @@ class Config {
     var probeX = 0.640f; var probeY = 0.833f
     var probeLumMin = 140
     var closeRetries = 4
+    // Сторож: максимум времени на один код (мс). Если шаг завис — пропускаем код и идём дальше.
+    var codeTimeoutMs = 30000L
 
     fun digits() = floatArrayOf(digit0, digit1, digit2, digit3, digit4, digit5, digit6, digit7, digit8, digit9)
 
@@ -125,6 +127,9 @@ class Config {
             appendLine("PROBE_Y=${c.probeY}")
             appendLine("PROBE_LUM_MIN=${c.probeLumMin}")
             appendLine("CLOSE_RETRIES=${c.closeRetries}")
+            appendLine()
+            appendLine("# Сторож: максимум времени на один код, мс (при зависании шага код пропускается)")
+            appendLine("CODE_TIMEOUT_MS=${c.codeTimeoutMs}")
         }
 
         /** Читает config.txt из Download/configcards. Если файла нет — создаёт с значениями по умолчанию. */
@@ -212,6 +217,7 @@ class Config {
             cfg.probeX = f("PROBE_X", cfg.probeX); cfg.probeY = f("PROBE_Y", cfg.probeY)
             cfg.probeLumMin = i("PROBE_LUM_MIN", cfg.probeLumMin)
             cfg.closeRetries = i("CLOSE_RETRIES", cfg.closeRetries)
+            cfg.codeTimeoutMs = i("CODE_TIMEOUT_MS", cfg.codeTimeoutMs.toInt()).toLong()
         }
     }
 }

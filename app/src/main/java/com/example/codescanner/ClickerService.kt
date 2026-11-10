@@ -12,6 +12,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.MediaStore
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
@@ -26,7 +27,7 @@ class ClickerService : AccessibilityService() {
         @Volatile var status = "ожидание"
 
         const val REL_PATH = "Download/card's/"
-        const val VERSION = "v8"
+        const val VERSION = "v9"
     }
 
     private var job: Job? = null
@@ -35,6 +36,20 @@ class ClickerService : AccessibilityService() {
     private var cfg = Config()
     // Пометка последней находки: "" — обычная (жёлтая OK), "нет карты", "окно" — иное диалоговое окно
     private var lastNote = ""
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var errors = 0       // сколько раз шаг завис/упал и был пропущен
+    private var gestureTimeouts = 0
+
+    private fun acquireWake() {
+        runCatching {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CodeScanner:run")
+            wl.setReferenceCounted(false)
+            wl.acquire(12 * 60 * 60 * 1000L)
+            wakeLock = wl
+        }
+    }
+    private fun releaseWake() { runCatching { wakeLock?.let { if (it.isHeld) it.release() } }; wakeLock = null }
 
     override fun onServiceConnected() { instance = this
         val m = resources.displayMetrics; w = m.widthPixels; h = m.heightPixels }
@@ -48,24 +63,51 @@ class ClickerService : AccessibilityService() {
         val m = resources.displayMetrics
         w = maxOf(m.widthPixels, m.heightPixels)
         h = minOf(m.widthPixels, m.heightPixels)
+        errors = 0; gestureTimeouts = 0
+        acquireWake()
         job = scope.launch {
             var code = startCode
-            repeat(count) {
-                status = "[$VERSION] проверяю $code"
-                if (tryCode(code)) {
-                    val note = lastNote
-                    saveHit(code, note)
-                    status = if (note.isEmpty()) "НАЙДЕН $code" else "НАЙДЕН $code ($note)"
-                    closeDialog()
+            try {
+                repeat(count) {
+                    status = "[$VERSION] проверяю $code (сбоев: $errors, жестов: $gestureTimeouts)"
+                    try {
+                        // Сторож: один код не должен занимать дольше cfg.codeTimeoutMs, иначе пропускаем шаг.
+                        val hit = withTimeoutOrNull(cfg.codeTimeoutMs) { tryCode(code) }
+                        if (hit == null) {
+                            errors++
+                            status = "[$VERSION] таймаут на коде $code, иду дальше (сбоев: $errors, жестов: $gestureTimeouts)"
+                            // Возможно, на экране остался диалог — пробуем закрыть крестиком.
+                            withTimeoutOrNull(10_000L) { if (isDialogOpenNow()) closeDialog() }
+                        } else if (hit) {
+                            val note = lastNote
+                            runCatching { saveHit(code, note) }
+                            status = if (note.isEmpty()) "НАЙДЕН $code" else "НАЙДЕН $code ($note)"
+                            withTimeoutOrNull(15_000L) { closeDialog() }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        errors++
+                        status = "[$VERSION] ошибка ${e.javaClass.simpleName} на коде $code, иду дальше (сбоев: $errors, жестов: $gestureTimeouts)"
+                        delay(1000)
+                    }
+                    code++
+                    delay(delayMs)
                 }
-                code++
-                delay(delayMs)
+                status = "готово, последний код ${code - 1}"
+            } finally {
+                releaseWake()
             }
-            status = "готово, последний код ${code - 1}"
         }
     }
 
-    fun stop() { job?.cancel(); status = "остановлено" }
+    /** Открыт ли сейчас диалог (скриншот + проверка). */
+    private suspend fun isDialogOpenNow(): Boolean {
+        val b = screenshot() ?: return false
+        val r = isDialogOpen(b); b.recycle(); return r
+    }
+
+    fun stop() { job?.cancel(); releaseWake(); status = "остановлено" }
     fun isRunning() = job?.isActive == true
 
     private suspend fun tryCode(code: Long): Boolean {
@@ -228,26 +270,34 @@ class ClickerService : AccessibilityService() {
         copy.recycle()
     }
 
-    private suspend fun tap(fx: Float, fy: Float) = suspendCancellableCoroutine<Unit> { c ->
-        val path = Path().apply { moveTo(fx * w, fy * h) }
-        val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 60)).build()
-        val ok = dispatchGesture(g, object : GestureResultCallback() {
-            override fun onCompleted(d: GestureDescription?) { if (c.isActive) c.resume(Unit) }
-            override fun onCancelled(d: GestureDescription?) { if (c.isActive) c.resume(Unit) }
-        }, null)
-        if (!ok && c.isActive) c.resume(Unit)
+    private suspend fun tap(fx: Float, fy: Float) {
+        // Если система не вызвала callback жеста (бывает), не ждём вечно.
+        val done = withTimeoutOrNull(2500L) {
+            suspendCancellableCoroutine<Unit> { c ->
+                val path = Path().apply { moveTo(fx * w, fy * h) }
+                val g = GestureDescription.Builder()
+                    .addStroke(GestureDescription.StrokeDescription(path, 0, 60)).build()
+                val ok = dispatchGesture(g, object : GestureResultCallback() {
+                    override fun onCompleted(d: GestureDescription?) { if (c.isActive) c.resume(Unit) }
+                    override fun onCancelled(d: GestureDescription?) { if (c.isActive) c.resume(Unit) }
+                }, null)
+                if (!ok && c.isActive) c.resume(Unit)
+            }
+        }
+        if (done == null) gestureTimeouts++
     }
 
-    private suspend fun screenshot(): Bitmap? = suspendCancellableCoroutine { c ->
-        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
-            override fun onSuccess(r: ScreenshotResult) {
-                val hw = Bitmap.wrapHardwareBuffer(r.hardwareBuffer, r.colorSpace)
-                val soft = hw?.copy(Bitmap.Config.ARGB_8888, false)
-                hw?.recycle(); r.hardwareBuffer.close()
-                if (c.isActive) c.resume(soft)
-            }
-            override fun onFailure(code: Int) { if (c.isActive) c.resume(null) }
-        })
+    private suspend fun screenshot(): Bitmap? = withTimeoutOrNull(4000L) {
+        suspendCancellableCoroutine<Bitmap?> { c ->
+            takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(r: ScreenshotResult) {
+                    val hw = Bitmap.wrapHardwareBuffer(r.hardwareBuffer, r.colorSpace)
+                    val soft = hw?.copy(Bitmap.Config.ARGB_8888, false)
+                    hw?.recycle(); r.hardwareBuffer.close()
+                    if (c.isActive) c.resume(soft) else soft?.recycle()
+                }
+                override fun onFailure(code: Int) { if (c.isActive) c.resume(null) }
+            })
+        }
     }
 }
