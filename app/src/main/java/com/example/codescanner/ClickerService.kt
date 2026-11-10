@@ -27,7 +27,7 @@ class ClickerService : AccessibilityService() {
         @Volatile var status = "ожидание"
 
         const val REL_PATH = "Download/card's/"
-        const val VERSION = "v9"
+        const val VERSION = "v10"
     }
 
     private var job: Job? = null
@@ -39,6 +39,8 @@ class ClickerService : AccessibilityService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var errors = 0       // сколько раз шаг завис/упал и был пропущен
     private var gestureTimeouts = 0
+    private var needRetry = false    // клавиатура не закрылась — повторить тот же код
+    private var kbLeftOpen = false   // клавиатура осталась открытой после прошлого кода — закрыть до ввода
 
     private fun acquireWake() {
         runCatching {
@@ -72,7 +74,13 @@ class ClickerService : AccessibilityService() {
                     status = "[$VERSION] проверяю $code (сбоев: $errors, жестов: $gestureTimeouts)"
                     try {
                         // Сторож: один код не должен занимать дольше cfg.codeTimeoutMs, иначе пропускаем шаг.
-                        val hit = withTimeoutOrNull(cfg.codeTimeoutMs) { tryCode(code) }
+                        var hit: Boolean?
+                        var attempts = 0
+                        do {
+                            needRetry = false
+                            hit = withTimeoutOrNull(cfg.codeTimeoutMs) { tryCode(code) }
+                            attempts++
+                        } while (needRetry && hit == false && attempts < 3)
                         if (hit == null) {
                             errors++
                             status = "[$VERSION] таймаут на коде $code, иду дальше (сбоев: $errors, жестов: $gestureTimeouts)"
@@ -114,17 +122,35 @@ class ClickerService : AccessibilityService() {
         val text = code.toString()
         status = "ввод $text"
 
+        // 0) Если прошлый код оставил клавиатуру открытой — сначала закрываем её.
+        if (kbLeftOpen) {
+            hideKeyboard()
+            kbLeftOpen = false
+        }
+
         // 1) Сфокусировать поле обычным тапом (создаёт/активирует системный EditText).
         tap(cfg.fieldX, cfg.fieldY); delay(cfg.delayAfterFieldTap)
 
         // 2) Подставить код напрямую через Accessibility — полностью заменяет
-        //    содержимое поля, старый текст не остаётся и не склеивается.
-        val setOk = setFieldText(text)
+        //    содержимое поля. Несколько попыток: иногда узел поля на миг недоступен.
+        var setOk = false
+        for (attempt in 0 until 3) {
+            setOk = setFieldText(text)
+            if (setOk) break
+            delay(200)
+        }
 
         if (!setOk) {
-            // Резерв: тапы по клавиатуре, если системное поле не нашлось.
-            tap(cfg.clearX, cfg.clearY); delay(200)
-            tap(cfg.fieldX, cfg.fieldY); delay(350)
+            // Резерв: набор цифр тапами по клавиатуре.
+            val shot = screenshot()
+            val kbOpen = shot?.let { val r = isKeyboardOpen(it); it.recycle(); r } ?: false
+            if (kbOpen) {
+                // Клавиатура уже открыта: долгое нажатие Backspace стирает старый текст.
+                press(cfg.backspaceX, cfg.backspaceY, 2000); delay(200)
+            } else {
+                tap(cfg.clearX, cfg.clearY); delay(200)
+                tap(cfg.fieldX, cfg.fieldY); delay(350)
+            }
             val digits = cfg.digits()
             for (ch in text) {
                 tap(digits[ch - '0'], cfg.keyRowY); delay(cfg.delayDigitTap)
@@ -133,16 +159,22 @@ class ClickerService : AccessibilityService() {
 
         delay(cfg.delayAfterSetText)
 
-        // 3) Коммит введённого текста — тап по синей кнопке ввода/галочке НА САМОЙ
-        //    клавиатуре (IME action), а НЕ системное "Назад". "Назад" в этой игре
-        //    отменяет/обнуляет поле вместо того чтобы просто скрыть клавиатуру —
-        //    из-за этого реального обмена не происходило вообще.
-        tap(cfg.enterX, cfg.enterY)
-        delay(cfg.delayAfterEnter)
+        // 3) Коммит введённого текста — тап по синей кнопке ввода НА САМОЙ клавиатуре
+        //    (системное "Назад" в этой игре обнуляет поле). Проверяем скриншотом, что клавиатура
+        //    закрылась; если нет — повторяем, затем сворачиваем стрелкой клавиатуры.
+        if (!commitAndCloseKeyboard()) {
+            // Клавиатура не закрылась: "Обменять" не нажимаем (иначе попадём по клавише), код повторим.
+            kbLeftOpen = true
+            needRetry = true
+            status = "[$VERSION] клавиатура не закрылась на коде $code (сбоев: $errors)"
+            errors++
+            return false
+        }
 
         tap(cfg.exchX, cfg.exchY); delay(cfg.delayAfterExch)
 
         val bmp = screenshot() ?: run { status = "[$VERSION] скриншот не получен ($code)"; return false }
+        if (isKeyboardOpen(bmp)) kbLeftOpen = true
         val yellow = isYellow(bmp, cfg.okX, cfg.okY)
         // Второй вариант находки: код рабочий, но у вас нет нужной карты (серая OK, красная надпись).
         val noCard = !yellow && isNoCard(bmp)
@@ -157,12 +189,22 @@ class ClickerService : AccessibilityService() {
 
     /** Находит системное поле ввода (EditText) в активном окне и заменяет его текст целиком. */
     private fun setFieldText(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val node = findEditText(root, 0) ?: run { root.recycle(); return false }
-        val args = Bundle()
-        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-        val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        node.recycle(); root.recycle()
+        val roots = ArrayList<AccessibilityNodeInfo>()
+        rootInActiveWindow?.let { roots.add(it) }
+        runCatching { for (win in windows) win.root?.let { roots.add(it) } }
+        var ok = false
+        for (root in roots) {
+            if (!ok) {
+                val node = findEditText(root, 0)
+                if (node != null) {
+                    val args = Bundle()
+                    args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                    ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                    node.recycle()
+                }
+            }
+            root.recycle()
+        }
         return ok
     }
 
@@ -179,6 +221,49 @@ class ClickerService : AccessibilityService() {
             child.recycle()
         }
         return null
+    }
+
+    /** Клавиатура открыта, если на месте цифрового/буквенного ряда тёмный фон (в списке и диалоге там светлая панель). */
+    private fun isKeyboardOpen(b: Bitmap): Boolean {
+        val x1 = (cfg.kbX1 * b.width).toInt().coerceIn(0, b.width - 2)
+        val x2 = (cfg.kbX2 * b.width).toInt().coerceIn(x1 + 1, b.width)
+        val y1 = (cfg.kbY1 * b.height).toInt().coerceIn(0, b.height - 2)
+        val y2 = (cfg.kbY2 * b.height).toInt().coerceIn(y1 + 1, b.height)
+        var sum = 0L; var n = 0
+        val row = IntArray(x2 - x1)
+        for (y in y1 until y2) {
+            b.getPixels(row, 0, x2 - x1, x1, y, x2 - x1, 1)
+            for (c in row) { sum += (Color.red(c) + Color.green(c) + Color.blue(c)) / 3; n++ }
+        }
+        return n > 0 && sum / n < cfg.kbLumMax
+    }
+
+    /** Нажимает Enter на клавиатуре и убеждается, что она закрылась. true — клавиатуры больше нет. */
+    private suspend fun commitAndCloseKeyboard(): Boolean {
+        for (i in 0 until maxOf(1, cfg.enterRetries)) {
+            tap(cfg.enterX, cfg.enterY)
+            delay(cfg.delayAfterEnter)
+            val b = screenshot() ?: return true   // не удалось проверить — считаем, что закрылась
+            val open = isKeyboardOpen(b); b.recycle()
+            if (!open) return true
+        }
+        // Enter не помог — сворачиваем клавиатуру стрелкой.
+        return hideKeyboard()
+    }
+
+    /** Сворачивает клавиатуру стрелкой, при необходимости пробует ещё Enter. true — закрылась. */
+    private suspend fun hideKeyboard(): Boolean {
+        for (i in 0 until 2) {
+            tap(cfg.kbHideX, cfg.kbHideY); delay(500)
+            val b = screenshot() ?: return true
+            val open = isKeyboardOpen(b); b.recycle()
+            if (!open) return true
+            tap(cfg.enterX, cfg.enterY); delay(cfg.delayAfterEnter)
+            val b2 = screenshot() ?: return true
+            val open2 = isKeyboardOpen(b2); b2.recycle()
+            if (!open2) return true
+        }
+        return false
     }
 
     private fun isYellow(b: Bitmap, fx: Float, fy: Float): Boolean {
@@ -270,13 +355,15 @@ class ClickerService : AccessibilityService() {
         copy.recycle()
     }
 
-    private suspend fun tap(fx: Float, fy: Float) {
+    private suspend fun tap(fx: Float, fy: Float) = press(fx, fy, 60)
+
+    private suspend fun press(fx: Float, fy: Float, durMs: Long) {
         // Если система не вызвала callback жеста (бывает), не ждём вечно.
-        val done = withTimeoutOrNull(2500L) {
+        val done = withTimeoutOrNull(2500L + durMs) {
             suspendCancellableCoroutine<Unit> { c ->
                 val path = Path().apply { moveTo(fx * w, fy * h) }
                 val g = GestureDescription.Builder()
-                    .addStroke(GestureDescription.StrokeDescription(path, 0, 60)).build()
+                    .addStroke(GestureDescription.StrokeDescription(path, 0, durMs)).build()
                 val ok = dispatchGesture(g, object : GestureResultCallback() {
                     override fun onCompleted(d: GestureDescription?) { if (c.isActive) c.resume(Unit) }
                     override fun onCancelled(d: GestureDescription?) { if (c.isActive) c.resume(Unit) }

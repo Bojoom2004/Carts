@@ -64,6 +64,15 @@ class Config {
     // Сторож: максимум времени на один код (мс). Если шаг завис — пропускаем код и идём дальше.
     var codeTimeoutMs = 30000L
 
+    // Защита от "зависшей" клавиатуры.
+    // Область (доли реального экрана), где при открытой клавиатуре тёмный фон, а в списке — светлая панель.
+    var kbX1 = 0.25f; var kbX2 = 0.35f; var kbY1 = 0.60f; var kbY2 = 0.63f
+    var kbLumMax = 90
+    var enterRetries = 3
+    // Стрелка "свернуть клавиатуру" и Backspace на клавиатуре (в системе координат кликера, как остальные X)
+    var kbHideX = 0.072f; var kbHideY = 0.503f
+    var backspaceX = 1.0f; var backspaceY = 0.856f
+
     fun digits() = floatArrayOf(digit0, digit1, digit2, digit3, digit4, digit5, digit6, digit7, digit8, digit9)
 
     companion object {
@@ -130,6 +139,19 @@ class Config {
             appendLine()
             appendLine("# Сторож: максимум времени на один код, мс (при зависании шага код пропускается)")
             appendLine("CODE_TIMEOUT_MS=${c.codeTimeoutMs}")
+            appendLine()
+            appendLine("# Клавиатура: область проверки (тёмный фон = открыта), порог яркости, число повторов Enter,")
+            appendLine("# стрелка свернуть и Backspace (X в системе координат кликера)")
+            appendLine("KB_X1=${c.kbX1}")
+            appendLine("KB_X2=${c.kbX2}")
+            appendLine("KB_Y1=${c.kbY1}")
+            appendLine("KB_Y2=${c.kbY2}")
+            appendLine("KB_LUM_MAX=${c.kbLumMax}")
+            appendLine("ENTER_RETRIES=${c.enterRetries}")
+            appendLine("KB_HIDE_X=${c.kbHideX}")
+            appendLine("KB_HIDE_Y=${c.kbHideY}")
+            appendLine("BACKSPACE_X=${c.backspaceX}")
+            appendLine("BACKSPACE_Y=${c.backspaceY}")
         }
 
         /** Читает config.txt из Download/configcards. Если файла нет — создаёт с значениями по умолчанию. */
@@ -218,6 +240,12 @@ class Config {
             cfg.probeLumMin = i("PROBE_LUM_MIN", cfg.probeLumMin)
             cfg.closeRetries = i("CLOSE_RETRIES", cfg.closeRetries)
             cfg.codeTimeoutMs = i("CODE_TIMEOUT_MS", cfg.codeTimeoutMs.toInt()).toLong()
+            cfg.kbX1 = f("KB_X1", cfg.kbX1); cfg.kbX2 = f("KB_X2", cfg.kbX2)
+            cfg.kbY1 = f("KB_Y1", cfg.kbY1); cfg.kbY2 = f("KB_Y2", cfg.kbY2)
+            cfg.kbLumMax = i("KB_LUM_MAX", cfg.kbLumMax)
+            cfg.enterRetries = i("ENTER_RETRIES", cfg.enterRetries)
+            cfg.kbHideX = f("KB_HIDE_X", cfg.kbHideX); cfg.kbHideY = f("KB_HIDE_Y", cfg.kbHideY)
+            cfg.backspaceX = f("BACKSPACE_X", cfg.backspaceX); cfg.backspaceY = f("BACKSPACE_Y", cfg.backspaceY)
         }
     }
 }
